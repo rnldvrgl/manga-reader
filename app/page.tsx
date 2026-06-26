@@ -5,7 +5,7 @@ import { getChapterList } from "@/lib/chapters";
 import { BookMarked, BookOpen, Layers, Clock, Hash } from "lucide-react";
 import { ThemeToggle } from "@/components/ThemeToggle";
 
-export const dynamic = "force-dynamic";
+export const dynamic = "force-static";
 
 export default function HomePage() {
 	const chapters = getChapterList();

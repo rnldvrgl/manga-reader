@@ -2,10 +2,17 @@ import { notFound } from "next/navigation";
 import { getChapter, getChapterList } from "@/lib/chapters";
 import MangaReader from "@/components/MangaReader";
 
-export const dynamic = "force-dynamic";
-
 interface Props {
 	params: Promise<{ slug: string }>;
+}
+
+export const dynamic = "force-static";
+
+export const dynamicParams = false;
+
+export async function generateStaticParams() {
+	const chapters = getChapterList();
+	return chapters.map((ch) => ({ slug: ch.slug }));
 }
 
 export default async function ReadPage({ params }: Props) {
