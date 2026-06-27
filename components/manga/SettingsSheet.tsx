@@ -9,10 +9,8 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
-
-type ReadMode = "snap" | "scroll" | "book";
-const AUTO_INTERVALS = [3, 5, 8, 12] as const;
-type AutoInterval = (typeof AUTO_INTERVALS)[number];
+import { AutoInterval, ReadMode } from "@/lib/types";
+import { AUTO_INTERVALS } from "@/lib/constants";
 
 const READ_MODES: {
   value: ReadMode;

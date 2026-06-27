@@ -1,8 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
-
-const AUTO_INTERVALS = [3, 5, 8, 12] as const;
-type AutoInterval = (typeof AUTO_INTERVALS)[number];
+import { AutoInterval } from "../types";
 
 export function useAutoPlay(
   autoInterval: AutoInterval,

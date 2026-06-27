@@ -15,10 +15,8 @@ import { PagePill } from "./manga/PagePill";
 import { ReaderBottomBar } from "./manga/ReaderBottomBar";
 import { ReaderTopBar } from "./manga/ReaderTopBar";
 import { SettingsSheet } from "./manga/SettingsSheet";
-
-type ReadMode = "snap" | "scroll" | "book";
-const AUTO_INTERVALS = [3, 5, 8, 12] as const;
-type AutoInterval = (typeof AUTO_INTERVALS)[number];
+import { AUTO_INTERVALS } from "@/lib/constants";
+import { ReadMode, AutoInterval } from "@/lib/types";
 
 interface Props {
   chapter: Chapter;
@@ -40,20 +38,26 @@ export default function MangaReader({
   nextChapter,
 }: Props) {
   const router = useRouter();
-  const [readMode, setReadMode] = usePersistedState<ReadMode>(
+  const [persistedReadMode, setReadMode] = usePersistedState<ReadMode>(
     "manga-read-mode",
     "snap",
   );
-  const [autoInterval, setAutoInterval] = usePersistedState<AutoInterval>(
-    "manga-auto-interval",
-    5,
-    (v) => {
+  const [persistedAutoInterval, setAutoInterval] =
+    usePersistedState<AutoInterval>("manga-auto-interval", 8, (v) => {
       const n = Number(v);
       return (AUTO_INTERVALS as readonly number[]).includes(n)
         ? (n as AutoInterval)
-        : 5;
-    },
-  );
+        : 8;
+    });
+
+  const [hasMounted, setHasMounted] = useState(false);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setHasMounted(true);
+  }, []);
+
+  const readMode = hasMounted ? persistedReadMode : "snap";
+  const autoInterval = hasMounted ? persistedAutoInterval : 8;
 
   const [showPageList, setShowPageList] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -77,6 +81,23 @@ export default function MangaReader({
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
+
+  // Continuous auto-scroll, used only in "scroll" read mode. Speed is
+  // derived from the same `autoInterval` setting used by snap/book
+  // autoplay, just reinterpreted as "seconds to scroll one viewport
+  // height" instead of "seconds per page", so the same settings UI works
+  // for all three modes without needing a second control.
+  const [scrollAutoPlay, setScrollAutoPlay] = useState(false);
+  const scrollAutoPlayRafRef = useRef<number | null>(null);
+  const scrollAutoPlayLastTsRef = useRef<number | null>(null);
+
+  const stopScrollAutoPlay = useCallback(() => {
+    if (scrollAutoPlayRafRef.current !== null) {
+      cancelAnimationFrame(scrollAutoPlayRafRef.current);
+      scrollAutoPlayRafRef.current = null;
+    }
+    scrollAutoPlayLastTsRef.current = null;
+  }, []);
 
   const goTo = useCallback(
     (page: number, silent = false) => {
@@ -162,12 +183,13 @@ export default function MangaReader({
       }
       if (e.key === " ") {
         e.preventDefault();
-        setAutoPlay((p) => !p);
+        if (readMode === "scroll") setScrollAutoPlay((p) => !p);
+        else setAutoPlay((p) => !p);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [handleNext, handlePrev, setAutoPlay]);
+  }, [handleNext, handlePrev, setAutoPlay, readMode]);
 
   useEffect(() => {
     if (readMode === "scroll") return;
@@ -196,6 +218,68 @@ export default function MangaReader({
       el.removeEventListener("touchend", onEnd);
     };
   }, [readMode, handleNext, handlePrev]);
+
+  // Stop continuous auto-scroll whenever it no longer makes sense to run:
+  // leaving scroll mode, opening a sheet/panel, or unmounting.
+  useEffect(() => {
+    if (readMode !== "scroll" || panelOpen) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setScrollAutoPlay(false);
+    }
+  }, [readMode, panelOpen]);
+
+  useEffect(() => {
+    if (!scrollAutoPlay || readMode !== "scroll") {
+      stopScrollAutoPlay();
+      return;
+    }
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    // autoInterval is "seconds per page" for snap/book; reinterpret as
+    // "seconds to scroll one viewport height" for continuous scroll.
+    const pxPerMs = container.clientHeight / (autoInterval * 1000);
+
+    const step = (ts: number) => {
+      const last = scrollAutoPlayLastTsRef.current;
+      scrollAutoPlayLastTsRef.current = ts;
+      if (last !== null) {
+        const dt = ts - last;
+        container.scrollTop += pxPerMs * dt;
+
+        const atBottom =
+          container.scrollTop + container.clientHeight >=
+          container.scrollHeight - 2;
+        if (atBottom) {
+          setScrollAutoPlay(false);
+          return;
+        }
+      }
+      scrollAutoPlayRafRef.current = requestAnimationFrame(step);
+    };
+
+    scrollAutoPlayLastTsRef.current = null;
+    scrollAutoPlayRafRef.current = requestAnimationFrame(step);
+
+    return stopScrollAutoPlay;
+  }, [scrollAutoPlay, readMode, autoInterval, stopScrollAutoPlay]);
+
+  // Manual scroll/touch input cancels auto-scroll, same as touching the
+  // page would interrupt any other autoplay mode.
+  useEffect(() => {
+    if (readMode !== "scroll") return;
+    const container = scrollContainerRef.current;
+    if (!container || !scrollAutoPlay) return;
+    const onWheelOrTouch = () => setScrollAutoPlay(false);
+    container.addEventListener("wheel", onWheelOrTouch, { passive: true });
+    container.addEventListener("touchstart", onWheelOrTouch, {
+      passive: true,
+    });
+    return () => {
+      container.removeEventListener("wheel", onWheelOrTouch);
+      container.removeEventListener("touchstart", onWheelOrTouch);
+    };
+  }, [readMode, scrollAutoPlay]);
 
   useEffect(() => {
     if (readMode !== "scroll") return;
@@ -314,6 +398,25 @@ export default function MangaReader({
                 />
               </motion.div>
             ))}
+
+            {nextChapter && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  router.push(
+                    `/series/${seriesSlug}/read?chapter=${nextChapter.number}`,
+                  );
+                }}
+                className="mt-4 w-[min(100%,320px)] rounded-xl border border-border bg-card px-6 py-5 text-center transition-colors hover:bg-accent"
+              >
+                <div className="text-sm text-muted-foreground">
+                  End of chapter
+                </div>
+                <div className="mt-1 text-base font-medium">
+                  Next Chapter {nextChapter.number} →
+                </div>
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -402,13 +505,17 @@ export default function MangaReader({
         currentPage={currentPage}
         totalPages={totalPages}
         progress={progress}
-        autoPlay={autoPlay}
-        countdown={countdown}
+        autoPlay={readMode === "scroll" ? scrollAutoPlay : autoPlay}
+        countdown={readMode === "scroll" ? 0 : countdown}
         autoInterval={autoInterval}
         hasPrev={!!prevChapter}
         hasNext={!!nextChapter}
         onGoTo={goTo}
-        onToggleAutoPlay={() => setAutoPlay((p) => !p)}
+        onToggleAutoPlay={() =>
+          readMode === "scroll"
+            ? setScrollAutoPlay((p) => !p)
+            : setAutoPlay((p) => !p)
+        }
         onPrevChapter={() =>
           prevChapter &&
           router.push(
