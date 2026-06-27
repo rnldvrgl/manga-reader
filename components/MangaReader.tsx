@@ -16,7 +16,7 @@ import { ReaderBottomBar } from "./manga/ReaderBottomBar";
 import { ReaderTopBar } from "./manga/ReaderTopBar";
 import { SettingsSheet } from "./manga/SettingsSheet";
 import { AUTO_INTERVALS } from "@/lib/constants";
-import { ReadMode, AutoInterval } from "@/lib/types";
+import type { ReadMode, AutoInterval } from "@/lib/types";
 
 interface Props {
   chapter: Chapter;
@@ -30,6 +30,14 @@ const pageVariants = {
   center: { x: 0, opacity: 1 },
   exit: (dir: number) => ({ x: dir > 0 ? "-30%" : "30%", opacity: 0 }),
 };
+
+// Below this many scrollable px, there's nothing meaningful for
+// continuous auto-scroll to do (a short chapter's content can be barely
+// taller than the viewport, or not taller at all). Without this guard the
+// rAF loop's "reached bottom" check fires on the very first frame and
+// silently flips scrollAutoPlay back off, which looks exactly like
+// autoplay "not working."
+const MIN_SCROLLABLE_PX = 24;
 
 export default function MangaReader({
   chapter,
@@ -50,9 +58,19 @@ export default function MangaReader({
         : 8;
     });
 
+  // usePersistedState reads from localStorage, which doesn't exist during
+  // SSR — so the server always renders the *default* ("snap", 8s), while
+  // the client's first render can immediately see a different persisted
+  // value. That mismatch causes a hydration error: the server paints the
+  // "snap" branch, the client paints "scroll".
+  //
+  // Fix: force the SSR-safe defaults for the very first client render too
+  // (so hydration has nothing to disagree about), then swap to the real
+  // persisted value right after mount. This only affects the first paint;
+  // it's invisible in practice since it's a same-frame swap, and it avoids
+  // touching usePersistedState itself.
   const [hasMounted, setHasMounted] = useState(false);
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setHasMounted(true);
   }, []);
 
@@ -66,10 +84,6 @@ export default function MangaReader({
   const [currentPage, setCurrentPage] = useState(0);
   const currentPageRef = useRef(0);
 
-  // `direction` drives AnimatePresence's `custom` prop, which is read during
-  // render (and again on exit animations), so it must be reactive state —
-  // not a ref. We keep a ref mirror too, since some callbacks need the
-  // latest direction without depending on render-triggered state.
   const [direction, setDirection] = useState(1);
   const directionRef = useRef(1);
 
@@ -82,14 +96,30 @@ export default function MangaReader({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
 
-  // Continuous auto-scroll, used only in "scroll" read mode. Speed is
-  // derived from the same `autoInterval` setting used by snap/book
-  // autoplay, just reinterpreted as "seconds to scroll one viewport
-  // height" instead of "seconds per page", so the same settings UI works
-  // for all three modes without needing a second control.
-  const [scrollAutoPlay, setScrollAutoPlay] = useState(false);
+  const [scrollAutoPlayIntent, setScrollAutoPlayIntent] = useState(false);
+  const scrollAutoPlay =
+    scrollAutoPlayIntent && readMode === "scroll" && !panelOpen;
+  const setScrollAutoPlay = setScrollAutoPlayIntent;
+  const [scrollAutoPlayUnavailable, setScrollAutoPlayUnavailable] =
+    useState(false);
   const scrollAutoPlayRafRef = useRef<number | null>(null);
   const scrollAutoPlayLastTsRef = useRef<number | null>(null);
+
+  const toggleScrollAutoPlay = useCallback(() => {
+    setScrollAutoPlayIntent((wasOn) => {
+      if (wasOn) return false;
+      const container = scrollContainerRef.current;
+      const scrollableDistance = container
+        ? container.scrollHeight - container.clientHeight
+        : 0;
+      if (scrollableDistance < MIN_SCROLLABLE_PX) {
+        setScrollAutoPlayUnavailable(true);
+        return false;
+      }
+      setScrollAutoPlayUnavailable(false);
+      return true;
+    });
+  }, []);
 
   const stopScrollAutoPlay = useCallback(() => {
     if (scrollAutoPlayRafRef.current !== null) {
@@ -183,13 +213,13 @@ export default function MangaReader({
       }
       if (e.key === " ") {
         e.preventDefault();
-        if (readMode === "scroll") setScrollAutoPlay((p) => !p);
+        if (readMode === "scroll") toggleScrollAutoPlay();
         else setAutoPlay((p) => !p);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [handleNext, handlePrev, setAutoPlay, readMode]);
+  }, [handleNext, handlePrev, setAutoPlay, readMode, toggleScrollAutoPlay]);
 
   useEffect(() => {
     if (readMode === "scroll") return;
@@ -219,15 +249,6 @@ export default function MangaReader({
     };
   }, [readMode, handleNext, handlePrev]);
 
-  // Stop continuous auto-scroll whenever it no longer makes sense to run:
-  // leaving scroll mode, opening a sheet/panel, or unmounting.
-  useEffect(() => {
-    if (readMode !== "scroll" || panelOpen) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setScrollAutoPlay(false);
-    }
-  }, [readMode, panelOpen]);
-
   useEffect(() => {
     if (!scrollAutoPlay || readMode !== "scroll") {
       stopScrollAutoPlay();
@@ -236,20 +257,24 @@ export default function MangaReader({
     const container = scrollContainerRef.current;
     if (!container) return;
 
-    // autoInterval is "seconds per page" for snap/book; reinterpret as
-    // "seconds to scroll one viewport height" for continuous scroll.
-    const pxPerMs = container.clientHeight / (autoInterval * 1000);
+    const scrollableDistance = container.scrollHeight - container.clientHeight;
+    if (scrollableDistance < MIN_SCROLLABLE_PX) {
+      setScrollAutoPlayUnavailable(true);
+      return;
+    }
+    setScrollAutoPlayUnavailable(false);
 
     const step = (ts: number) => {
       const last = scrollAutoPlayLastTsRef.current;
       scrollAutoPlayLastTsRef.current = ts;
-      if (last !== null) {
+      const height = container.clientHeight;
+      if (last !== null && height > 0) {
         const dt = ts - last;
+        const pxPerMs = height / (autoInterval * 1000);
         container.scrollTop += pxPerMs * dt;
 
         const atBottom =
-          container.scrollTop + container.clientHeight >=
-          container.scrollHeight - 2;
+          container.scrollTop + height >= container.scrollHeight - 2;
         if (atBottom) {
           setScrollAutoPlay(false);
           return;
@@ -513,7 +538,7 @@ export default function MangaReader({
         onGoTo={goTo}
         onToggleAutoPlay={() =>
           readMode === "scroll"
-            ? setScrollAutoPlay((p) => !p)
+            ? toggleScrollAutoPlay()
             : setAutoPlay((p) => !p)
         }
         onPrevChapter={() =>
@@ -529,6 +554,14 @@ export default function MangaReader({
           )
         }
       />
+
+      {readMode === "scroll" && scrollAutoPlayUnavailable && (
+        <div className="absolute bottom-28 inset-x-0 flex justify-center z-30 pointer-events-none">
+          <div className="rounded-full bg-card border border-border px-4 py-2 text-xs text-muted-foreground shadow-sm">
+            Not enough to scroll in this chapter
+          </div>
+        </div>
+      )}
 
       <SettingsSheet
         open={showSettings}

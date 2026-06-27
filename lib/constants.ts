@@ -1,1 +1,1 @@
-export const AUTO_INTERVALS = [8, 12, 15, 20];
+export const AUTO_INTERVALS = [8, 12, 16, 20];
