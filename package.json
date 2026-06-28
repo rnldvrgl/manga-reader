@@ -8,7 +8,9 @@
     "build": "next build --webpack",
     "start": "next start",
     "generate:importmap": "cross-env NODE_OPTIONS=--no-deprecation payload generate:importmap",
-    "generate:types": "cross-env NODE_OPTIONS=--no-deprecation payload generate:types"
+    "generate:types": "cross-env NODE_OPTIONS=--no-deprecation payload generate:types",
+    "import-chapters": "tsx --env-file=.env.local scripts/import-chapters.ts",
+    "import-chapters:prod": "tsx --env-file=.env.production.local scripts/import-chapters.ts"
   },
   "dependencies": {
     "@payloadcms/db-mongodb": "^3.85.1",
@@ -40,6 +42,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.9",
     "tailwindcss": "^4",
+    "tsx": "^4.22.4",
     "typescript": "^5"
   }
 }
